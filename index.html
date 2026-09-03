@@ -223,7 +223,6 @@
   }
   .stamp.paid{color:var(--green); border-color:var(--green); background:var(--green-bg);}
   .stamp.unpaid{color:var(--red); border-color:var(--red); background:var(--red-bg);}
-  .stamp.bad{color:var(--ink-soft); border-color:var(--ink-soft); background:var(--paper-deep);}
   .stamp-toggle{cursor:pointer; width:100%; transform:rotate(-2deg); font-family:'Fraunces',serif;}
   .stamp-toggle:hover{filter:brightness(0.96);}
   .status-detail{
@@ -612,7 +611,6 @@ const PAYMENT_METHODS = ["澄靖國際","維妮私帳","現金交付","LINEPAY"]
 const STATUS_OPTIONS = [
   {v:"paid", t:"已收款", cls:"paid"},
   {v:"unpaid", t:"未收款", cls:"unpaid"},
-  {v:"bad", t:"呆帳", cls:"bad"},
 ];
 
 let state = { months: [], data: {}, currentMonth: null, currentYear: null, view: "entry", deposits: [], depositTaxRate: 5, clients: [] };
@@ -634,6 +632,15 @@ let reportSort = '';
 // ==========================================
 let syncTimer = null;
 let isSyncing = false;
+
+function migrateLegacyBadStatus(){
+  // 全站取消「呆帳」狀態：舊資料中狀態為 bad 的項目一律改為「未收款」，避免被誤算為已收
+  Object.values(state.data||{}).forEach(month=>{
+    (month.entries||[]).forEach(e=>{
+      if(e.status === 'bad') e.status = 'unpaid';
+    });
+  });
+}
 
 async function fetchFromCloud() {
   document.getElementById('globalLoader').style.display = 'flex';
@@ -674,6 +681,7 @@ async function fetchFromCloud() {
       }
       depositCurrentYear = null;
     }
+    migrateLegacyBadStatus();
     ready = true;
     flash('☁️ 雲端資料讀取完成');
   } catch(e) {
@@ -816,16 +824,16 @@ function calcEntry(e, taxRate){
   return {tax, subtotal};
 }
 function calcMonth(month){
-  let unitTotal=0, taxTotal=0, subtotal=0, unpaid=0, bad=0, shareTotal=0;
+  let unitTotal=0, taxTotal=0, subtotal=0, unpaid=0, shareTotal=0;
   const perPerson = {};
   const categoryTotals = {};
   (month.entries||[]).forEach(e=>{
     const {tax, sub} = (()=>{ const c=calcEntry(e, month.taxRate); return {tax:c.tax, sub:c.subtotal}; })();
-    unitTotal += e.unitPrice||0;
+    const revenue = e.unitPrice||0;
+    unitTotal += revenue;
     taxTotal += tax;
     subtotal += sub;
-    if(e.status==="unpaid") unpaid += sub;
-    else if(e.status==="bad") bad += sub;
+    if(e.status==="unpaid") unpaid += revenue;
     const cat = e.category || '未分類';
     categoryTotals[cat] = (categoryTotals[cat]||0) + (e.unitPrice||0);
     (e.shares||[]).forEach(s=>{
@@ -834,8 +842,8 @@ function calcMonth(month){
       if(s.name) perPerson[s.name] = (perPerson[s.name]||0)+amt;
     });
   });
-  const paid = unitTotal - unpaid - bad;
-  return {unitTotal, taxTotal, subtotal, paid, unpaid, bad, shareTotal, perPerson, categoryTotals};
+  const paid = unitTotal - unpaid;
+  return {unitTotal, taxTotal, subtotal, paid, unpaid, shareTotal, perPerson, categoryTotals};
 }
 
 let flashTimer;
@@ -1148,7 +1156,6 @@ function renderEntry(){
       <div class="total-cell brass"><div class="label">當月營收合計</div><div class="value">$${fmt(totals.unitTotal)}</div></div>
       <div class="total-cell green"><div class="label">已收金額</div><div class="value">$${fmt(totals.paid)}</div></div>
       <div class="total-cell red"><div class="label">未收金額</div><div class="value">$${fmt(totals.unpaid)}</div></div>
-      <div class="total-cell"><div class="label">呆帳金額</div><div class="value">$${fmt(totals.bad)}</div></div>
       <div class="total-cell brass"><div class="label">業務分潤小計</div><div class="value">$${fmt(totals.shareTotal)}</div></div>
       ${personEntries.map(([name,amt])=>`
       <div class="total-cell"><div class="label">${name}</div><div class="value">$${fmt(amt)}</div></div>`).join('')}
@@ -1765,18 +1772,18 @@ function exportOverviewToExcel(){
   const rows = getMonthsForYear(state.currentYear).map(m=>({m, t: calcMonth(state.data[m])}));
   const yearTotal = rows.reduce((acc,r)=>{
     acc.unitTotal += r.t.unitTotal; acc.paid += r.t.paid; acc.unpaid += r.t.unpaid;
-    acc.bad += r.t.bad; acc.shareTotal += r.t.shareTotal;
+    acc.shareTotal += r.t.shareTotal;
     return acc;
-  }, {unitTotal:0, paid:0, unpaid:0, bad:0, shareTotal:0});
+  }, {unitTotal:0, paid:0, unpaid:0, shareTotal:0});
   const peopleSet = new Set();
   rows.forEach(r=>Object.keys(r.t.perPerson).forEach(n=>peopleSet.add(n)));
   const people = Array.from(peopleSet);
 
-  const sheet1 = [['月份','當月營收合計','已收','未收','呆帳','分潤合計', ...people]];
+  const sheet1 = [['月份','當月營收合計','已收','未收','分潤合計', ...people]];
   rows.forEach(r=>{
-    sheet1.push([r.m, r.t.unitTotal, r.t.paid, r.t.unpaid, r.t.bad, r.t.shareTotal, ...people.map(p=>r.t.perPerson[p]||0)]);
+    sheet1.push([r.m, r.t.unitTotal, r.t.paid, r.t.unpaid, r.t.shareTotal, ...people.map(p=>r.t.perPerson[p]||0)]);
   });
-  sheet1.push(['年度總計', yearTotal.unitTotal, yearTotal.paid, yearTotal.unpaid, yearTotal.bad, yearTotal.shareTotal,
+  sheet1.push(['年度總計', yearTotal.unitTotal, yearTotal.paid, yearTotal.unpaid, yearTotal.shareTotal,
     ...people.map(p=>rows.reduce((s,r)=>s+(r.t.perPerson[p]||0),0))]);
 
   const catYearTotals = {};
@@ -1807,9 +1814,9 @@ function renderOverview(){
   const rows = getMonthsForYear(state.currentYear).map(m=>({m, t: calcMonth(state.data[m])}));
   const yearTotal = rows.reduce((acc,r)=>{
     acc.unitTotal += r.t.unitTotal; acc.paid += r.t.paid; acc.unpaid += r.t.unpaid;
-    acc.bad += r.t.bad; acc.shareTotal += r.t.shareTotal;
+    acc.shareTotal += r.t.shareTotal;
     return acc;
-  }, {unitTotal:0, paid:0, unpaid:0, bad:0, shareTotal:0});
+  }, {unitTotal:0, paid:0, unpaid:0, shareTotal:0});
 
   summary.innerHTML = `
     <div class="ov-card"><div class="label">累計月份</div><div class="value">${rows.length}</div></div>
@@ -1849,7 +1856,7 @@ function renderOverview(){
 
   table.innerHTML = `
     <thead><tr>
-      <th>月份</th><th>當月營收合計</th><th>已收</th><th>未收</th><th>呆帳</th><th>分潤合計</th>
+      <th>月份</th><th>當月營收合計</th><th>已收</th><th>未收</th><th>分潤合計</th>
       ${people.map(p=>`<th>${p}</th>`).join('')}
     </tr></thead>
     <tbody>
@@ -1858,7 +1865,6 @@ function renderOverview(){
         <td>${money(r.t.unitTotal)}</td>
         <td>${money(r.t.paid)}</td>
         <td>${money(r.t.unpaid)}</td>
-        <td>${money(r.t.bad)}</td>
         <td>${money(r.t.shareTotal)}</td>
         ${people.map(p=>`<td>${money(r.t.perPerson[p]||0)}</td>`).join('')}
       </tr>`).join('')}
@@ -1867,7 +1873,6 @@ function renderOverview(){
         <td>${money(yearTotal.unitTotal)}</td>
         <td>${money(yearTotal.paid)}</td>
         <td>${money(yearTotal.unpaid)}</td>
-        <td>${money(yearTotal.bad)}</td>
         <td>${money(yearTotal.shareTotal)}</td>
         ${people.map(p=>`<td>${money(rows.reduce((s,r)=>s+(r.t.perPerson[p]||0),0))}</td>`).join('')}
       </tr>
