@@ -536,6 +536,8 @@
       </div>
     </div>
     <div class="overview-summary" id="overviewSummary"></div>
+    <h3 class="section-heading">儲值型客戶資料</h3>
+    <div class="overview-summary" id="overviewDepositSummary"></div>
     <div class="chart" id="chart"></div>
     <div class="chart-legend" id="chartLegend"></div>
     <div class="table-scroll"><table class="overview-table" id="overviewTable"></table></div>
@@ -1824,6 +1826,25 @@ function renderOverview(){
     <div class="ov-card"><div class="label">未收金額</div><div class="value">$${fmt(yearTotal.unpaid)}</div></div>
     <div class="ov-card"><div class="label">累積業務分潤</div><div class="value">$${fmt(yearTotal.shareTotal)}</div></div>
   `;
+
+  const yearDeposits = (state.deposits||[]).filter(d=>getDepositYear(d)===state.currentYear);
+  const depositTotals = yearDeposits.reduce((acc,d)=>{
+    const c = calcDeposit(d, state.depositTaxRate);
+    acc.initial += Number(d.initialAmount)||0;
+    acc.used += c.used;
+    acc.balance += c.balance;
+    return acc;
+  }, {initial:0, used:0, balance:0});
+
+  const depositSummary = document.getElementById('overviewDepositSummary');
+  if(depositSummary){
+    depositSummary.innerHTML = `
+      <div class="ov-card"><div class="label">儲值型客戶</div><div class="value">${yearDeposits.length}</div></div>
+      <div class="ov-card"><div class="label">儲值總額</div><div class="value">$${fmt(depositTotals.initial)}</div></div>
+      <div class="ov-card"><div class="label">已使用額</div><div class="value">$${fmt(depositTotals.used)}</div></div>
+      <div class="ov-card"><div class="label">剩餘餘額</div><div class="value">$${fmt(depositTotals.balance)}</div></div>
+    `;
+  }
 
   const catSet = new Set();
   rows.forEach(r=>Object.keys(r.t.categoryTotals).forEach(c=>catSet.add(c)));
