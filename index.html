@@ -479,6 +479,7 @@
         <nav class="view-switch">
           <button data-view="overview">年度總覽</button>
           <button data-view="report">月營收分潤報表</button>
+          <button data-view="clientShare">客戶營收占比</button>
         </nav>
       </div>
     </div>
@@ -566,6 +567,18 @@
     </div>
   </section>
 
+  <section id="view-clientShare" hidden>
+    <div class="month-tabs year-tabs" id="clientShareYearTabs"></div>
+    <div class="month-toolbar">
+      <div></div>
+      <div class="month-actions">
+        <button class="btn-ghost" id="exportClientShareBtn">匯出 Excel</button>
+      </div>
+    </div>
+    <div class="overview-summary" id="clientShareSummary"></div>
+    <div class="table-scroll"><table class="overview-table" id="clientShareTable"></table></div>
+  </section>
+
   <section id="view-deposit" hidden>
     <div class="month-tabs year-tabs" id="depositYearTabs"></div>
     <div class="deposit-summary" id="depositSummary"></div>
@@ -608,7 +621,7 @@ function contentOptionsFor(category){
   return CONTENT_MAP[category] || ALL_CONTENT_OPTIONS;
 }
 const ACCOUNT_OPTIONS = ["澄靖國際","維妮私人","現金交付"];
-const PERSON_OPTIONS = ["維妮","佩佩","錦德"];
+const PERSON_OPTIONS = ["維妮","佩佩","錦德","小P"];
 const PAYMENT_METHODS = ["澄靖國際","維妮私帳","現金交付","LINEPAY"];
 const STATUS_OPTIONS = [
   {v:"paid", t:"已收款", cls:"paid"},
@@ -940,12 +953,14 @@ function render(){
   document.getElementById('view-commission').hidden = state.view!=='commission';
   document.getElementById('view-overview').hidden = state.view!=='overview';
   document.getElementById('view-report').hidden = state.view!=='report';
+  document.getElementById('view-clientShare').hidden = state.view!=='clientShare';
   document.getElementById('view-deposit').hidden = state.view!=='deposit';
   if(state.view==='clients') renderClients();
   else if(state.view==='entry') renderEntry();
   else if(state.view==='commission') renderCommission();
   else if(state.view==='overview') renderOverview();
   else if(state.view==='report') renderReport();
+  else if(state.view==='clientShare') renderClientShare();
   else renderDeposits();
 }
 
@@ -1224,7 +1239,23 @@ function renderEntry(){
     if(kwContent && !(e.content||'').toLowerCase().includes(kwContent)) return false;
     return true;
   });
-  filteredEntries.sort((a,b)=> (a.status==='unpaid'?0:1) - (b.status==='unpaid'?0:1));
+  // 同一客戶的項目分組連續呈現；有未收款項目的客戶群組優先，群組內未收款項目排前
+  const groupOrder = [];
+  const groupMap = new Map();
+  filteredEntries.forEach(e=>{
+    const key = entryClientName(e);
+    if(!groupMap.has(key)){ groupMap.set(key, []); groupOrder.push(key); }
+    groupMap.get(key).push(e);
+  });
+  groupMap.forEach(list=>{
+    list.sort((a,b)=> (a.status==='unpaid'?0:1) - (b.status==='unpaid'?0:1));
+  });
+  const unpaidGroups = groupOrder.filter(k=> groupMap.get(k).some(e=>e.status==='unpaid'));
+  const restGroups = groupOrder.filter(k=> !unpaidGroups.includes(k));
+  const sortedEntries = [];
+  [...unpaidGroups, ...restGroups].forEach(k=> sortedEntries.push(...groupMap.get(k)));
+  filteredEntries.length = 0;
+  filteredEntries.push(...sortedEntries);
 
   const rowsHost = document.getElementById('rowsHost');
   if(month.entries.length===0){
@@ -1768,6 +1799,82 @@ async function importAllFromExcel(file){
 
 function exportAllToExcel(){
   exportMultiSheet('赫睿師營收管理系統_全部資料.xlsx', buildAllSheets());
+}
+
+function buildClientShareRows(){
+  const months = getMonthsForYear(state.currentYear);
+  const clientMap = new Map(); // name -> {monthKey: amount}
+  months.forEach(m=>{
+    const month = state.data[m];
+    (month?.entries||[]).forEach(e=>{
+      const name = entryClientName(e) || '未填客戶';
+      const amt = e.unitPrice||0;
+      if(!clientMap.has(name)) clientMap.set(name, {});
+      const rec = clientMap.get(name);
+      rec[m] = (rec[m]||0) + amt;
+    });
+  });
+  const rows = Array.from(clientMap.entries()).map(([name, rec])=>{
+    const yearTotal = months.reduce((s,m)=> s+(rec[m]||0), 0);
+    return {name, rec, yearTotal};
+  }).sort((a,b)=> b.yearTotal - a.yearTotal);
+  const grandTotal = rows.reduce((s,r)=>s+r.yearTotal,0);
+  return {months, rows, grandTotal};
+}
+
+function renderClientShare(){
+  buildYearTabs('clientShareYearTabs', false);
+
+  const summary = document.getElementById('clientShareSummary');
+  const table = document.getElementById('clientShareTable');
+  const {months, rows, grandTotal} = buildClientShareRows();
+
+  summary.innerHTML = `
+    <div class="ov-card"><div class="label">往來客戶數</div><div class="value">${rows.length}</div></div>
+    <div class="ov-card"><div class="label">年度營收合計</div><div class="value">$${fmt(grandTotal)}</div></div>
+  `;
+
+  if(rows.length===0){
+    table.innerHTML = `<tbody><tr><td class="empty-state" style="padding:24px;text-align:center;">這個年度還沒有任何營收資料</td></tr></tbody>`;
+    return;
+  }
+
+  const monthTotals = months.map(m=> rows.reduce((s,r)=>s+(r.rec[m]||0), 0));
+
+  table.innerHTML = `
+    <thead><tr>
+      <th>客戶名稱</th>
+      ${months.map(m=>`<th>${m.slice(5)}月</th>`).join('')}
+      <th>年度營收</th>
+      <th>營收占比</th>
+    </tr></thead>
+    <tbody>
+      ${rows.map(r=>`<tr>
+        <td>${escAttr(r.name)}</td>
+        ${months.map(m=>`<td>${r.rec[m] ? money(r.rec[m]) : '-'}</td>`).join('')}
+        <td><b>${money(r.yearTotal)}</b></td>
+        <td>${grandTotal>0 ? Math.round(r.yearTotal/grandTotal*100) : 0}%</td>
+      </tr>`).join('')}
+      <tr class="total-row">
+        <td>年度總計</td>
+        ${monthTotals.map(t=>`<td>${money(t)}</td>`).join('')}
+        <td>${money(grandTotal)}</td>
+        <td>100%</td>
+      </tr>
+    </tbody>
+  `;
+}
+
+function exportClientShareToExcel(){
+  const {months, rows, grandTotal} = buildClientShareRows();
+  const monthTotals = months.map(m=> rows.reduce((s,r)=>s+(r.rec[m]||0), 0));
+  const header = ['客戶名稱', ...months.map(m=>m.slice(5)+'月'), '年度營收', '營收占比'];
+  const aoa = [header];
+  rows.forEach(r=>{
+    aoa.push([r.name, ...months.map(m=>r.rec[m]||0), r.yearTotal, grandTotal>0 ? Math.round(r.yearTotal/grandTotal*100)+'%' : '0%']);
+  });
+  aoa.push(['年度總計', ...monthTotals, grandTotal, '100%']);
+  exportToExcel(`客戶營收占比_${state.currentYear}.xlsx`, '客戶營收占比', aoa);
 }
 
 function exportOverviewToExcel(){
@@ -2392,6 +2499,7 @@ document.getElementById('exportCommissionBtn').addEventListener('click', ()=>{
   exportToExcel(`每月分潤登錄_${state.currentMonth}.xlsx`, state.currentMonth, aoa);
 });
 document.getElementById('exportOverviewBtn').addEventListener('click', exportOverviewToExcel);
+document.getElementById('exportClientShareBtn').addEventListener('click', exportClientShareToExcel);
 document.getElementById('exportAllBtn').addEventListener('click', exportAllToExcel);
 document.getElementById('importAllBtn').addEventListener('click', (ev)=>{
   const btn = ev.currentTarget;
